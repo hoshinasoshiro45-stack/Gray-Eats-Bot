@@ -31,6 +31,7 @@ import {
 } from "./domain.js";
 import { upsertAllPanels, upsertPanel } from "./panels.js";
 import { activeTicketKey, createServerConfig, JsonStore } from "./store.js";
+import { createTranscriptAttachments } from "./transcripts.js";
 import {
   categoryMenu,
   completionModal,
@@ -76,6 +77,29 @@ function hasRole(interaction: GuildInteraction, roleId: string): boolean {
 
 function canManageTickets(interaction: GuildInteraction, config: ServerConfig): boolean {
   return isAdministrator(interaction) || hasRole(interaction, config.roles.staff);
+}
+
+function canWorkTicket(
+  interaction: GuildInteraction,
+  ticket: TicketRecord,
+  config: ServerConfig,
+): boolean {
+  if (canManageTickets(interaction, config)) return true;
+  if (ticket.kind !== "order") return false;
+  const routeRoleId =
+    ticket.routeRoleId ??
+    (ticket.paymentMethodId
+      ? config.roles.paymentRoutes?.[ticket.paymentMethodId]
+      : undefined);
+  return Boolean(routeRoleId && hasRole(interaction, routeRoleId));
+}
+
+function isChecklistComplete(ticket: TicketRecord): boolean {
+  return Boolean(
+    ticket.checklist?.totalConfirmed &&
+      ticket.checklist.paymentConfirmed &&
+      ticket.checklist.orderPlaced,
+  );
 }
 
 async function replyPrivate(interaction: GuildInteraction, content: string): Promise<void> {
@@ -145,7 +169,14 @@ async function openPrivateTicket(
     const shortId = ticket.id.slice(0, 6);
     const prefix = ticket.kind === "order" ? "order" : "support";
     const name = `${prefix}-${safeChannelName(ticket.ownerId)}-${shortId}`.slice(0, 90);
-    const visibleRoles = [...new Set([config.roles.staff, config.roles.unclaim, config.roles.verifier])];
+    const visibleRoles = [
+      ...new Set([
+        config.roles.staff,
+        config.roles.unclaim,
+        config.roles.verifier,
+        ...(ticket.routeRoleId ? [ticket.routeRoleId] : []),
+      ]),
+    ];
     const permissionOverwrites = [
       {
         id: guild.roles.everyone.id,
@@ -198,9 +229,15 @@ async function openPrivateTicket(
     store.getState().activeTickets[key] = channel.id;
     await store.save();
     const panelMessage = await channel.send({
+      content: ticket.routeRoleId
+        ? `<@&${ticket.routeRoleId}> — this order is routed to your payment team.`
+        : undefined,
       embeds: [ticketEmbed(fullTicket)],
       components: ticketButtons(fullTicket),
-      allowedMentions: { parse: [] },
+      allowedMentions: {
+        parse: [],
+        roles: ticket.routeRoleId ? [ticket.routeRoleId] : [],
+      },
     });
     fullTicket.panelMessageId = panelMessage.id;
     await store.save();
@@ -242,12 +279,19 @@ async function handleSetup(interaction: ChatInputCommandInteraction): Promise<vo
       ticketCategory: interaction.options.getChannel("ticket_category", true).id,
       completed: interaction.options.getChannel("completed_orders", true).id,
       vouches: interaction.options.getChannel("vouches", true).id,
+      transcripts: interaction.options.getChannel("transcripts", true).id,
     },
     {
       staff: interaction.options.getRole("staff_role", true).id,
       unclaim: interaction.options.getRole("unclaim_role", true).id,
       verifier: interaction.options.getRole("verifier_role", true).id,
       statusPing: interaction.options.getRole("status_ping_role", true).id,
+      paymentRoutes: {
+        "cash-app": interaction.options.getRole("route_cash_app", true).id,
+        crypto: interaction.options.getRole("route_crypto", true).id,
+        zelle: interaction.options.getRole("route_zelle", true).id,
+        venmo: interaction.options.getRole("route_venmo", true).id,
+      },
     },
     previous,
   );
@@ -331,6 +375,50 @@ async function handleRestaurant(interaction: ChatInputCommandInteraction): Promi
   );
 }
 
+async function handleStatusNotifications(interaction: ButtonInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await replyPrivate(interaction, "Use this button inside your server.");
+    return;
+  }
+  const config = getGuildConfig(interaction);
+  if (!config) {
+    await replyPrivate(interaction, "An administrator must run /setup before notifications can be enabled.");
+    return;
+  }
+
+  const role = await interaction.guild.roles.fetch(config.roles.statusPing);
+  if (!role) {
+    await replyPrivate(interaction, "The configured notification role no longer exists. Ask an admin to rerun /setup.");
+    return;
+  }
+  const botMember =
+    interaction.guild.members.me ??
+    (client.user ? await interaction.guild.members.fetch(client.user.id) : null);
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    await replyPrivate(interaction, "The bot needs the Manage Roles permission to update notification subscriptions.");
+    return;
+  }
+  if (role.position >= botMember.roles.highest.position) {
+    await replyPrivate(interaction, "Move the bot's highest role above the notification role, then try again.");
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  if (member.roles.cache.has(role.id)) {
+    await member.roles.remove(role, "Member opted out of order status notifications.");
+    await interaction.reply({
+      content: "You are unsubscribed from order status notifications.",
+      flags: MessageFlags.Ephemeral,
+    });
+  } else {
+    await member.roles.add(role, "Member opted in to order status notifications.");
+    await interaction.reply({
+      content: "You are subscribed to order status notifications. Tap Notifications again to opt out.",
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   switch (interaction.commandName) {
     case "setup":
@@ -367,6 +455,10 @@ async function handleOrderButton(interaction: ButtonInteraction): Promise<void> 
 }
 
 async function handleButton(interaction: ButtonInteraction): Promise<void> {
+  if (interaction.customId === "status:notifications") {
+    await handleStatusNotifications(interaction);
+    return;
+  }
   if (interaction.customId === "order:start") {
     await handleOrderButton(interaction);
     return;
@@ -410,8 +502,8 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   }
 
   if (action === "claim") {
-    if (!canManageTickets(interaction, config)) {
-      await replyPrivate(interaction, "Only the configured staff role can claim tickets.");
+    if (!canWorkTicket(interaction, ticket, config)) {
+      await replyPrivate(interaction, "Only staff or the payment route team can claim this ticket.");
       return;
     }
     if (ticket.status !== "open") {
@@ -460,6 +552,46 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     return;
   }
 
+  if (action.startsWith("check-")) {
+    if (ticket.kind !== "order" || ticket.status !== "open") {
+      await replyPrivate(interaction, "The staff checklist is only available on open order tickets.");
+      return;
+    }
+    if (!ticket.claimedBy) {
+      await replyPrivate(interaction, "Claim this order before updating its checklist.");
+      return;
+    }
+    if (
+      interaction.user.id !== ticket.claimedBy &&
+      !isAdministrator(interaction) &&
+      !hasRole(interaction, config.roles.staff)
+    ) {
+      await replyPrivate(interaction, "Only the assigned staff member or a server admin can update this checklist.");
+      return;
+    }
+    ticket.checklist ??= {
+      totalConfirmed: false,
+      paymentConfirmed: false,
+      orderPlaced: false,
+    };
+    if (action === "check-total") {
+      ticket.checklist.totalConfirmed = !ticket.checklist.totalConfirmed;
+    } else if (action === "check-payment") {
+      ticket.checklist.paymentConfirmed = !ticket.checklist.paymentConfirmed;
+    } else if (action === "check-order") {
+      ticket.checklist.orderPlaced = !ticket.checklist.orderPlaced;
+    } else {
+      return;
+    }
+    await store.save();
+    await interaction.update({
+      embeds: [ticketEmbed(ticket)],
+      components: ticketButtons(ticket),
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
   if (action === "complete") {
     if (!isAdministrator(interaction) && !hasRole(interaction, config.roles.verifier)) {
       await replyPrivate(interaction, "Only the configured verifier role can complete an order.");
@@ -477,16 +609,20 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
       await replyPrivate(interaction, "A staff member must claim this ticket before it can be completed.");
       return;
     }
+    if (!isChecklistComplete(ticket)) {
+      await replyPrivate(interaction, "Complete all three staff checklist items before verifying this order.");
+      return;
+    }
     await interaction.showModal(completionModal(ticket.channelId));
     return;
   }
 
   if (action === "close") {
-    if (interaction.user.id !== ticket.ownerId && !canManageTickets(interaction, config)) {
+    if (interaction.user.id !== ticket.ownerId && !canWorkTicket(interaction, ticket, config)) {
       await replyPrivate(interaction, "Only the ticket owner or configured staff can close this ticket.");
       return;
     }
-    await closeTicket(interaction, ticket);
+    await closeTicket(interaction, ticket, config);
   }
 }
 
@@ -579,6 +715,11 @@ async function handleOrderModal(interaction: ModalSubmitInteraction): Promise<vo
     await replyPrivate(interaction, "That restaurant or payment method is no longer available.");
     return;
   }
+  const routeRoleId = config.roles.paymentRoutes?.[payment.id];
+  if (!routeRoleId) {
+    await replyPrivate(interaction, "An administrator must rerun /setup to configure payment-team roles.");
+    return;
+  }
   const cartTotal = parseUsd(interaction.fields.getTextInputValue("cart_total"));
   if (!cartTotal) {
     await replyPrivate(interaction, "Enter the cart total as a valid amount, such as 24.50.");
@@ -594,6 +735,12 @@ async function handleOrderModal(interaction: ModalSubmitInteraction): Promise<vo
     kind: "order" as const,
     status: "open" as const,
     openedAt: Date.now(),
+    routeRoleId,
+    checklist: {
+      totalConfirmed: false,
+      paymentConfirmed: false,
+      orderPlaced: false,
+    },
     restaurantId: restaurant.id,
     paymentMethodId: payment.id,
     items: interaction.fields.getTextInputValue("items").trim(),
@@ -650,6 +797,10 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
     await replyPrivate(interaction, "This ticket must be open and claimed before it can be completed.");
     return;
   }
+  if (!isChecklistComplete(ticket)) {
+    await replyPrivate(interaction, "Complete all three staff checklist items before verifying this order.");
+    return;
+  }
   const finalCharge = parseUsd(interaction.fields.getTextInputValue("final_charge"));
   if (!finalCharge) {
     await replyPrivate(interaction, "Enter the final charge as a valid amount, such as 14.69.");
@@ -672,6 +823,7 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
     finalCharge,
     openedAt: ticket.openedAt,
     completedAt,
+    claimedBy: ticket.claimedBy,
     completedBy: interaction.user.id,
   };
   const completionChannel = await requireTextChannel(
@@ -712,13 +864,32 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
   await interaction.editReply("The order has been verified and posted to the completed-orders channel.");
 }
 
-async function closeTicket(interaction: ButtonInteraction, ticket: TicketRecord): Promise<void> {
+async function closeTicket(
+  interaction: ButtonInteraction,
+  ticket: TicketRecord,
+  config: ServerConfig,
+): Promise<void> {
   if (!interaction.guild) {
     await replyPrivate(interaction, "Close this ticket from inside its server.");
     return;
   }
   const channel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
+  if (!config.channels.transcripts) {
+    await replyPrivate(interaction, "An administrator must rerun /setup to configure the transcript channel.");
+    return;
+  }
+  const transcriptChannel = await requireTextChannel(
+    interaction.guild,
+    config.channels.transcripts,
+    "ticket-transcripts",
+  );
   await interaction.deferUpdate();
+  const transcriptFiles = await createTranscriptAttachments(channel, ticket, interaction.user.id);
+  await transcriptChannel.send({
+    content: `📄 Saved ${ticket.kind} ticket transcript for #${channel.name}.`,
+    files: transcriptFiles,
+    allowedMentions: { parse: [] },
+  });
   await channel.permissionOverwrites.edit(ticket.ownerId, {
     ViewChannel: false,
     SendMessages: false,

@@ -1,6 +1,6 @@
 # Cheap Eats Discord Bot Source
 
-TypeScript source for a Discord food-ordering bot with private tickets, restaurant availability, order status announcements, order verification, and customer vouches.
+TypeScript source for a Discord food-ordering bot with payment-routed private tickets, staff checklists, status subscriptions, transcript archives, order verification, and customer vouches.
 
 ## Run & Operate
 
@@ -24,6 +24,7 @@ TypeScript source for a Discord food-ordering bot with private tickets, restaura
 - `packages/cheap-eats-bot/src/index.ts` — bot startup and interaction handlers
 - `packages/cheap-eats-bot/src/ui.ts` — Discord panels, forms, ticket cards, and embeds
 - `packages/cheap-eats-bot/src/store.ts` — private local JSON state
+- `packages/cheap-eats-bot/src/transcripts.ts` — private text transcript generation for closed tickets
 - `packages/cheap-eats-bot/README.md` — GitHub, Discord, and host setup
 - `packages/cheap-eats-bot/.env.example` — required runtime variable names; contains no credentials
 
@@ -50,6 +51,8 @@ TypeScript source for a Discord food-ordering bot with private tickets, restaura
 
 - Register commands with `deploy-commands` after changing slash command definitions.
 - The bot needs a long-running process and persistent storage for `data/state.json`.
+- `/setup` selects a private transcript channel and payment-specific staff roles; do not put customer transcripts in a public channel.
+- The status notification role requires Manage Roles and must be below the bot's highest role.
 - Keep `.env` and the bot's local `data/` directory out of Git.
 
 ## Pointers

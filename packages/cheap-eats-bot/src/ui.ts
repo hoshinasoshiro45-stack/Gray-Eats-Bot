@@ -64,7 +64,7 @@ export function supportPanel() {
         .setColor(cyan)
         .setTitle("🛟 Support")
         .setDescription(
-          "Open a private support ticket for order questions, payment help, or other service issues. Do not post payment credentials or card details.",
+          "Open a private support ticket for order questions, payment help, refunds, deal issues, or other service issues. You can attach screenshots or proof after the ticket opens. Do not post payment credentials or card details.",
         ),
     ],
     components: [
@@ -92,7 +92,7 @@ export function menuPanel(config: ServerConfig) {
         .setTitle("📋 Cheap Eats — Menu")
         .setDescription(
           [
-            "Choose from the current restaurant list in the order channel.",
+            `Choose from the current restaurant list, then start your order in <#${config.channels.orderPanel}>.`,
             "",
             ...list,
             "",
@@ -152,7 +152,8 @@ export function statusPanel(config: ServerConfig) {
           [
             message,
             config.status.reason ? `\n**Update:** ${config.status.reason}` : "",
-            "\nUse the order channel to start an order when service is accepting them.",
+            `\nOrder tickets are in <#${config.channels.orderPanel}>.`,
+            "\nTap **Notifications** to opt in to status pings.",
           ].join(""),
         )
         .setFooter({
@@ -164,11 +165,16 @@ export function statusPanel(config: ServerConfig) {
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
-          .setCustomId("order:start")
           .setLabel("Open order")
           .setEmoji("🛒")
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://discord.com/channels/${config.guildId}/${config.channels.orderPanel}`)
           .setDisabled(state === "closed"),
+        new ButtonBuilder()
+          .setCustomId("status:notifications")
+          .setLabel("Notifications")
+          .setEmoji("🔔")
+          .setStyle(ButtonStyle.Secondary),
       ),
     ],
     allowedMentions: { parse: [] },
@@ -319,11 +325,24 @@ export function ticketEmbed(ticket: TicketRecord) {
       .addFields(
         { name: "🍽️ Restaurant", value: getRestaurant(ticket.restaurantId ?? "")?.name ?? "—", inline: true },
         { name: "💳 Payment", value: getPaymentMethod(ticket.paymentMethodId ?? "")?.name ?? "—", inline: true },
+        {
+          name: "👨‍🍳 Chef route",
+          value: ticket.routeRoleId ? `<@&${ticket.routeRoleId}>` : "Not configured",
+          inline: true,
+        },
         { name: "🧾 Items and quantities", value: ticket.items || "—" },
         { name: "🛒 Cart total", value: ticket.cartTotal || "—", inline: true },
         { name: "📍 Pickup or delivery", value: ticket.pickupOrDelivery || "—" },
         { name: "☎️ Contact", value: ticket.contact || "Not provided", inline: true },
         { name: "📝 Notes", value: ticket.notes || "Not provided", inline: true },
+        {
+          name: "✅ Staff checklist",
+          value: [
+            `${ticket.checklist?.totalConfirmed ? "✅" : "▫️"} Confirm total`,
+            `${ticket.checklist?.paymentConfirmed ? "✅" : "▫️"} Confirm payment`,
+            `${ticket.checklist?.orderPlaced ? "✅" : "▫️"} Place order`,
+          ].join("\n"),
+        },
       )
       .setFooter({ text: "Customer order details are visible only inside this private ticket." });
     if (ticket.status === "completed") {
@@ -369,7 +388,29 @@ export function ticketButtons(ticket: TicketRecord) {
       .setEmoji("🔒")
       .setStyle(ButtonStyle.Danger),
   );
-  return [row];
+  if (ticket.kind !== "order") return [row];
+
+  const checklistRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ticket:check-total:${ticket.channelId}`)
+      .setLabel(ticket.checklist?.totalConfirmed ? "Total confirmed" : "Confirm total")
+      .setEmoji(ticket.checklist?.totalConfirmed ? "✅" : "1️⃣")
+      .setStyle(ticket.checklist?.totalConfirmed ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(ticket.status === "completed"),
+    new ButtonBuilder()
+      .setCustomId(`ticket:check-payment:${ticket.channelId}`)
+      .setLabel(ticket.checklist?.paymentConfirmed ? "Payment confirmed" : "Confirm payment")
+      .setEmoji(ticket.checklist?.paymentConfirmed ? "✅" : "2️⃣")
+      .setStyle(ticket.checklist?.paymentConfirmed ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(ticket.status === "completed"),
+    new ButtonBuilder()
+      .setCustomId(`ticket:check-order:${ticket.channelId}`)
+      .setLabel(ticket.checklist?.orderPlaced ? "Order placed" : "Place order")
+      .setEmoji(ticket.checklist?.orderPlaced ? "✅" : "3️⃣")
+      .setStyle(ticket.checklist?.orderPlaced ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(ticket.status === "completed"),
+  );
+  return [row, checklistRow];
 }
 
 export function completedOrderEmbed(order: CompletedOrder) {
@@ -384,7 +425,8 @@ export function completedOrderEmbed(order: CompletedOrder) {
       { name: "💳 Payment", value: payment, inline: true },
       { name: "🏷️ Final charge", value: order.finalCharge, inline: true },
       { name: "👤 Customer", value: `<@${order.customerId}>`, inline: true },
-      { name: "✅ Completed by", value: `<@${order.completedBy}>`, inline: true },
+      { name: "👨‍🍳 Chef", value: `<@${order.claimedBy}>`, inline: true },
+      { name: "🛡️ Confirmed by", value: `<@${order.completedBy}>`, inline: true },
       {
         name: "⏱️ Completed in",
         value: formatDuration(order.completedAt - order.openedAt),

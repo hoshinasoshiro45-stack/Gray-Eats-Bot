@@ -67,12 +67,14 @@ export interface ServerConfig {
     ticketCategory: string;
     completed: string;
     vouches: string;
+    transcripts: string;
   };
   roles: {
     staff: string;
     unclaim: string;
     verifier: string;
     statusPing: string;
+    paymentRoutes: Record<PaymentMethodId, string>;
   };
   restaurants: Record<RestaurantId, boolean>;
   status: {
@@ -94,6 +96,12 @@ export interface TicketRecord {
   status: TicketStatus;
   openedAt: number;
   claimedBy?: string;
+  routeRoleId?: string;
+  checklist?: {
+    totalConfirmed: boolean;
+    paymentConfirmed: boolean;
+    orderPlaced: boolean;
+  };
   restaurantId?: RestaurantId;
   paymentMethodId?: PaymentMethodId;
   items?: string;
@@ -116,6 +124,7 @@ export interface CompletedOrder {
   finalCharge: string;
   openedAt: number;
   completedAt: number;
+  claimedBy: string;
   completedBy: string;
   completionMessage?: PanelRef;
 }

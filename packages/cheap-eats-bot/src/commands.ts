@@ -68,6 +68,13 @@ export const slashCommands = [
         .addChannelTypes(ChannelType.GuildText)
         .setRequired(true),
     )
+    .addChannelOption((option) =>
+      option
+        .setName("transcripts")
+        .setDescription("Private staff channel where closed-ticket transcripts are archived.")
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true),
+    )
     .addRoleOption((option) =>
       option
         .setName("staff_role")
@@ -89,7 +96,31 @@ export const slashCommands = [
     .addRoleOption((option) =>
       option
         .setName("status_ping_role")
-        .setDescription("Role to mention when staff announce that orders are open.")
+        .setDescription("Role members opt into for order status notifications.")
+        .setRequired(true),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("route_cash_app")
+        .setDescription("Staff role notified and granted access for Cash App orders.")
+        .setRequired(true),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("route_crypto")
+        .setDescription("Staff role notified and granted access for Crypto orders.")
+        .setRequired(true),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("route_zelle")
+        .setDescription("Staff role notified and granted access for Zelle orders.")
+        .setRequired(true),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("route_venmo")
+        .setDescription("Staff role notified and granted access for Venmo orders.")
         .setRequired(true),
     ),
   new SlashCommandBuilder()
