@@ -131,6 +131,7 @@ export interface CompletedOrder {
 
 export interface BotState {
   servers: Record<string, ServerConfig>;
+  managementAccessUsers: Record<string, string[]>;
   tickets: Record<string, TicketRecord>;
   activeTickets: Record<string, string>;
   completedOrders: Record<string, CompletedOrder>;

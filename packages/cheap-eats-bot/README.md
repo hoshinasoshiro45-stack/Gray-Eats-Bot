@@ -67,7 +67,9 @@ This is a long-running Discord Gateway bot, not a web app. A host that stops idl
 
 ## Configure the server
 
-Run `/setup` as a server administrator and select the channels and roles:
+Server administrators always retain bot-management access. Use `/access grant @user`, `/access revoke @user`, and `/access list` to manage who else may run `/setup`, `/status`, and `/restaurant`. Only server administrators can change this access list. Order and support panels remain available to server members, while staff roles continue to control ticket actions.
+
+Run `/setup` as a server administrator or an approved manager and select the channels and roles:
 
 - **Channels:** order panel, support panel, menu, FAQ, status, ticket category, completed orders, vouches, and a private transcript archive.
 - **Staff role:** can claim and close tickets.

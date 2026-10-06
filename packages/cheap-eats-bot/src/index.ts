@@ -68,6 +68,18 @@ function isAdministrator(interaction: GuildInteraction): boolean {
   );
 }
 
+function canManageBot(interaction: GuildInteraction): boolean {
+  return (
+    isAdministrator(interaction) ||
+    Boolean(
+      interaction.guildId &&
+        store
+          .getManagementAccessUsers(interaction.guildId)
+          .includes(interaction.user.id),
+    )
+  );
+}
+
 function hasRole(interaction: GuildInteraction, roleId: string): boolean {
   const member = interaction.member;
   if (!member || !("roles" in member)) return false;
@@ -260,8 +272,8 @@ async function handleSetup(interaction: ChatInputCommandInteraction): Promise<vo
     await replyPrivate(interaction, "Run this command inside your server.");
     return;
   }
-  if (!isAdministrator(interaction)) {
-    await replyPrivate(interaction, "Only a server administrator can run /setup.");
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can run /setup.");
     return;
   }
 
@@ -314,8 +326,8 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
     await replyPrivate(interaction, "An administrator must run /setup before the bot can be used.");
     return;
   }
-  if (!canManageTickets(interaction, config)) {
-    await replyPrivate(interaction, "Only staff can change the service status.");
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can change the service status.");
     return;
   }
 
@@ -354,8 +366,8 @@ async function handleRestaurant(interaction: ChatInputCommandInteraction): Promi
     await replyPrivate(interaction, "An administrator must run /setup before the bot can be used.");
     return;
   }
-  if (!canManageTickets(interaction, config)) {
-    await replyPrivate(interaction, "Only staff can change restaurant availability.");
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can change restaurant availability.");
     return;
   }
 
@@ -373,6 +385,99 @@ async function handleRestaurant(interaction: ChatInputCommandInteraction): Promi
   await interaction.editReply(
     `${restaurant.name} is now ${available ? "available" : "unavailable"} in the order menu.`,
   );
+}
+
+async function replyManagementAccessList(
+  interaction: ChatInputCommandInteraction,
+  userIds: string[],
+): Promise<void> {
+  if (userIds.length === 0) {
+    await replyPrivate(interaction, "No users are currently approved. Server administrators always have access.");
+    return;
+  }
+
+  const chunks: string[] = [];
+  let current = `Approved management users (${userIds.length}):`;
+  for (const userId of userIds) {
+    const line = `\n• <@${userId}>`;
+    if (current.length + line.length > 1800) {
+      chunks.push(current);
+      current = "Approved management users (continued):";
+    }
+    current += line;
+  }
+  chunks.push(current);
+
+  await interaction.reply({
+    content: chunks[0],
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+  for (const content of chunks.slice(1)) {
+    await interaction.followUp({
+      content,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+  }
+}
+
+async function handleAccess(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await replyPrivate(interaction, "Run this command inside your server.");
+    return;
+  }
+  if (!isAdministrator(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator can manage bot access.");
+    return;
+  }
+
+  const guildId = interaction.guild.id;
+  const subcommand = interaction.options.getSubcommand();
+  const userIds = store.getManagementAccessUsers(guildId);
+
+  if (subcommand === "list") {
+    await replyManagementAccessList(interaction, userIds);
+    return;
+  }
+
+  const user = interaction.options.getUser("user", true);
+  if (user.bot) {
+    await replyPrivate(interaction, "Bot accounts cannot be added to the management access list.");
+    return;
+  }
+
+  if (subcommand === "grant") {
+    if (userIds.includes(user.id)) {
+      await replyPrivate(interaction, `<@${user.id}> already has management access.`);
+      return;
+    }
+    store.setManagementAccessUsers(guildId, [...userIds, user.id]);
+    await store.save();
+    await interaction.reply({
+      content: `<@${user.id}> can now run /setup, /status, and /restaurant.`,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  if (subcommand === "revoke") {
+    if (!userIds.includes(user.id)) {
+      await replyPrivate(interaction, `<@${user.id}> does not have management access.`);
+      return;
+    }
+    store.setManagementAccessUsers(
+      guildId,
+      userIds.filter((userId) => userId !== user.id),
+    );
+    await store.save();
+    await interaction.reply({
+      content: `<@${user.id}> can no longer run bot management commands.`,
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+  }
 }
 
 async function handleStatusNotifications(interaction: ButtonInteraction): Promise<void> {
@@ -429,6 +534,9 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
       break;
     case "restaurant":
       await handleRestaurant(interaction);
+      break;
+    case "access":
+      await handleAccess(interaction);
       break;
   }
 }

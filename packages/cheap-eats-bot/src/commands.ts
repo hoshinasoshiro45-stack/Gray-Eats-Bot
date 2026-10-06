@@ -11,7 +11,6 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Connect this server's channels and staff roles to the bot.")
-    .setDefaultMemberPermissions(adminOnly)
     .addChannelOption((option) =>
       option
         .setName("order_panel")
@@ -165,5 +164,28 @@ export const slashCommands = [
         .setName("available")
         .setDescription("Whether customers can select this restaurant.")
         .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("access")
+    .setDescription("Manage who can use Cheap Eats management commands.")
+    .setDefaultMemberPermissions(adminOnly)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("grant")
+        .setDescription("Allow a user to run bot management commands.")
+        .addUserOption((option) =>
+          option.setName("user").setDescription("User to approve.").setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("revoke")
+        .setDescription("Remove a user's bot management access.")
+        .addUserOption((option) =>
+          option.setName("user").setDescription("User to remove.").setRequired(true),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName("list").setDescription("List users approved for bot management."),
     ),
 ].map((command) => command.toJSON());

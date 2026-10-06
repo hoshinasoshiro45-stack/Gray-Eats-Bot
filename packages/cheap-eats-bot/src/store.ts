@@ -10,6 +10,7 @@ import {
 function emptyState(): BotState {
   return {
     servers: {},
+    managementAccessUsers: {},
     tickets: {},
     activeTickets: {},
     completedOrders: {},
@@ -67,7 +68,9 @@ export class JsonStore {
   async load(): Promise<void> {
     try {
       const contents = await readFile(this.filePath, "utf8");
-      this.state = JSON.parse(contents) as BotState;
+      const loaded = JSON.parse(contents) as Partial<BotState>;
+      this.state = { ...emptyState(), ...loaded };
+      this.state.managementAccessUsers ??= {};
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         this.state = emptyState();
@@ -83,6 +86,14 @@ export class JsonStore {
 
   getServer(guildId: string): ServerConfig | undefined {
     return this.state.servers[guildId];
+  }
+
+  getManagementAccessUsers(guildId: string): string[] {
+    return this.state.managementAccessUsers[guildId] ?? [];
+  }
+
+  setManagementAccessUsers(guildId: string, userIds: string[]): void {
+    this.state.managementAccessUsers[guildId] = [...new Set(userIds)];
   }
 
   getTicket(channelId: string): TicketRecord | undefined {

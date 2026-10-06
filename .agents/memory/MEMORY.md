@@ -1,0 +1,1 @@
+- [Cheap Eats management access](cheap-eats-management-access.md) — admins manage the user allowlist; member order and support access stays open.
