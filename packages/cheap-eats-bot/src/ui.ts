@@ -401,7 +401,7 @@ export function ticketButtons(ticket: TicketRecord) {
       .setDisabled(ticket.kind !== "order" || !ticket.claimedBy || ticket.status === "completed"),
     new ButtonBuilder()
       .setCustomId(`ticket:close:${ticket.channelId}`)
-      .setLabel("Close ticket")
+      .setLabel("Close & Delete")
       .setEmoji("🔒")
       .setStyle(ButtonStyle.Danger),
   );

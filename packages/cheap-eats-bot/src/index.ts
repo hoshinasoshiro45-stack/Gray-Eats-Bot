@@ -145,6 +145,12 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function discordErrorCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "number" ? code : undefined;
+}
+
 function safeChannelName(value: string): string {
   return (
     value
@@ -1223,13 +1229,14 @@ async function closeTicket(
   pendingTicketClosures.add(ticket.channelId);
   let controlsDisabled = false;
   let customerMessagingDisabled = false;
-  let customerAccessRemoved = false;
-  let channelRenamed = false;
+  let channelDeleted = false;
+  let ticketStateRemoved = false;
+  let channelDeletionFailed = false;
+  let channelPermissionFailure = false;
   let channel: TextChannel | undefined;
-  let originalChannelName = "";
+  const ticketKey = activeTicketKey(ticket.guildId, ticket.ownerId, ticket.kind);
   try {
     channel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
-    originalChannelName = channel.name;
     if (!config.channels.transcripts) {
       await replyPrivate(interaction, "An administrator must rerun /setup to configure the transcript channel.");
       return;
@@ -1244,7 +1251,7 @@ async function closeTicket(
     controlsDisabled = true;
 
     await channel.send({
-      content: "📄 Preparing the transcript. The 5-second close countdown will start after it is saved.",
+      content: "📄 Preparing the transcript. This channel and its messages will be deleted 5 seconds after the transcript is saved.",
       allowedMentions: { parse: [] },
     });
     const transcriptFiles = await createTranscriptAttachments(channel, ticket, interaction.user.id);
@@ -1254,62 +1261,70 @@ async function closeTicket(
       allowedMentions: { parse: [] },
     });
     customerMessagingDisabled = true;
-    await channel.permissionOverwrites.edit(ticket.ownerId, {
-      SendMessages: false,
-    });
+    try {
+      await channel.permissionOverwrites.edit(ticket.ownerId, {
+        SendMessages: false,
+      });
+    } catch (error) {
+      channelPermissionFailure = [50001, 50013].includes(discordErrorCode(error) ?? 0);
+      throw error;
+    }
 
     const countdown = await channel.send({
-      content: "🔒 This ticket will close and be archived in 5 seconds.",
+      content: `🔒 This ticket channel and its messages will be deleted in 5 seconds. Transcript saved in <#${transcriptChannel.id}>.`,
       allowedMentions: { parse: [] },
     });
     for (let secondsRemaining = 4; secondsRemaining >= 1; secondsRemaining -= 1) {
       await delay(1000);
-      await countdown.edit(
-        `🔒 This ticket will close and be archived in ${secondsRemaining} second${secondsRemaining === 1 ? "" : "s"}.`,
-      );
+      await countdown.edit({
+        content: `🔒 This ticket channel and its messages will be deleted in ${secondsRemaining} second${secondsRemaining === 1 ? "" : "s"}. Transcript saved in <#${transcriptChannel.id}>.`,
+        allowedMentions: { parse: [] },
+      });
     }
     await delay(1000);
-    await countdown.edit("🔒 Transcript saved. Removing customer access; the staff archive will be retained.");
-
-    await channel.setName(`closed-${channel.name.replace(/^(order|support)-/, "")}`.slice(0, 90));
-    channelRenamed = true;
-    await channel.permissionOverwrites.edit(ticket.ownerId, {
-      ViewChannel: false,
-      SendMessages: false,
-      ReadMessageHistory: false,
-    });
-    customerAccessRemoved = true;
-    customerMessagingDisabled = false;
-    await channel.send({
-      content: `🔒 Ticket closed by <@${interaction.user.id}>. This staff archive is retained.`,
-      allowedMentions: { users: [interaction.user.id], parse: [] },
-    }).catch((error) => {
-      console.error("Ticket access was closed, but the close notice could not be posted:", error);
+    await countdown.edit({
+      content: `🔒 Deleting this channel now. Its transcript remains in <#${transcriptChannel.id}>.`,
+      allowedMentions: { parse: [] },
     });
 
     delete store.getState().tickets[ticket.channelId];
-    delete store.getState().activeTickets[
-      activeTicketKey(ticket.guildId, ticket.ownerId, ticket.kind)
-    ];
+    delete store.getState().activeTickets[ticketKey];
+    ticketStateRemoved = true;
     await store.save();
+    try {
+      await channel.delete("Ticket closed after its transcript was archived and the countdown ended.");
+      channelDeleted = true;
+      customerMessagingDisabled = false;
+    } catch (error) {
+      if (discordErrorCode(error) === 10003) {
+        channelDeleted = true;
+        customerMessagingDisabled = false;
+      } else {
+        channelDeletionFailed = true;
+        throw error;
+      }
+    }
     await interaction.followUp({
-      content: `Ticket closed and archived. The customer's access is removed; staff can retain the channel. Transcript saved in <#${transcriptChannel.id}>.`,
+      content: `Ticket channel deleted. Its transcript is saved in <#${transcriptChannel.id}>.`,
       flags: MessageFlags.Ephemeral,
     });
   } catch (error) {
-    if (channel && !customerAccessRemoved) {
+    if (ticketStateRemoved && !channelDeleted) {
+      store.getState().tickets[ticket.channelId] = ticket;
+      store.getState().activeTickets[ticketKey] = ticket.channelId;
+      ticketStateRemoved = false;
+      await store.save().catch((restoreError) => {
+        console.error("Could not restore ticket state after channel deletion failed:", restoreError);
+      });
+    }
+    if (channel && !channelDeleted) {
       if (customerMessagingDisabled) {
         await channel.permissionOverwrites.edit(ticket.ownerId, { SendMessages: true }).catch((restoreError) => {
           console.error("Could not restore ticket-owner messaging after close failed:", restoreError);
         });
       }
-      if (channelRenamed) {
-        await channel.setName(originalChannelName).catch((restoreError) => {
-          console.error("Could not restore the ticket channel name after close failed:", restoreError);
-        });
-      }
     }
-    if (controlsDisabled && !customerAccessRemoved) {
+    if (controlsDisabled && !channelDeleted) {
       try {
         await interaction.message.edit({
           embeds: [ticketEmbed(ticket)],
@@ -1319,6 +1334,13 @@ async function closeTicket(
       } catch (restoreError) {
         console.error("Could not restore a ticket panel after close failed:", restoreError);
       }
+    }
+    if (channelDeletionFailed || channelPermissionFailure) {
+      await replyPrivate(
+        interaction,
+        "The transcript was saved, but Discord would not let the bot prepare or delete the ticket channel. The ticket was restored; check that the bot has Manage Channels permission and try again.",
+      );
+      return;
     }
     throw error;
   } finally {

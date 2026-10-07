@@ -1,1 +1,2 @@
 - [Cheap Eats management access](cheap-eats-management-access.md) — admins manage the user allowlist; member order and support access stays open.
+- [Cheap Eats ticket closure](cheap-eats-ticket-closure.md) — save the transcript first, then delete the ticket channel and original messages after the countdown.
