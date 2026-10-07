@@ -13,6 +13,7 @@ import {
   PAYMENT_METHODS,
   RESTAURANTS,
   formatDuration,
+  getRestaurantDisplayName,
   getPaymentMethod,
   getRestaurant,
   statusLabel,
@@ -83,7 +84,10 @@ export function supportPanel() {
 export function menuPanel(config: ServerConfig) {
   const list = RESTAURANTS.map((restaurant) => {
     const available = config.restaurants[restaurant.id];
-    return `${available ? "•" : "~~•"} ${restaurant.name}${available ? "" : " — unavailable"}`;
+    const entry = `▸ **${restaurant.name}**${
+      restaurant.specialNote ? ` · *${restaurant.specialNote}*` : ""
+    }`;
+    return available ? entry : `~~${entry}~~ — unavailable`;
   });
   return {
     embeds: [
@@ -95,8 +99,6 @@ export function menuPanel(config: ServerConfig) {
             `Choose from the current restaurant list, then start your order in <#${config.channels.orderPanel}>.`,
             "",
             ...list,
-            "",
-            "Dave's Hot Chicken is sometimes available. Staff can toggle it on when offered.",
           ].join("\n"),
         )
         .setFooter({ text: "Availability can change based on service status and staff." }),
@@ -134,7 +136,7 @@ export function faqPanel() {
   };
 }
 
-export function statusPanel(config: ServerConfig) {
+export function statusPanel(config: ServerConfig, ping = false) {
   const state = config.status.state;
   const color = state === "open" ? green : state === "slow" ? 0xf1c40f : 0xe74c3c;
   const message =
@@ -143,7 +145,15 @@ export function statusPanel(config: ServerConfig) {
       : state === "slow"
         ? "Accepting orders, but service may take longer than usual."
         : "Orders are currently closed.";
+  const announcement =
+    state === "open"
+      ? "Orders are now open."
+      : state === "slow"
+        ? "Orders are open, but service is currently slow."
+        : "Orders are now closed.";
+  const mention = ping && state === "open" ? `<@&${config.roles.statusPing}> ` : "";
   return {
+    content: `${mention}${statusLabel(state)} — ${announcement}`,
     embeds: [
       new EmbedBuilder()
         .setColor(color)
@@ -177,7 +187,10 @@ export function statusPanel(config: ServerConfig) {
           .setStyle(ButtonStyle.Secondary),
       ),
     ],
-    allowedMentions: { parse: [] },
+    allowedMentions: {
+      parse: [],
+      roles: mention ? [config.roles.statusPing] : [],
+    },
   };
 }
 
@@ -267,6 +280,9 @@ export function orderModal(restaurantId: RestaurantId, paymentId: string) {
   const restaurant = getRestaurant(restaurantId);
   const payment = getPaymentMethod(paymentId);
   if (!restaurant || !payment) throw new Error("Invalid restaurant or payment selection.");
+  const pickupLabel = restaurant.pickupOnly
+    ? "Pickup only — enter pickup details"
+    : "Pickup or delivery details";
   return new ModalBuilder()
     .setCustomId(`order:submit:${restaurantId}:${paymentId}`)
     .setTitle(`${restaurant.name} order details`)
@@ -275,9 +291,10 @@ export function orderModal(restaurantId: RestaurantId, paymentId: string) {
       modalField("cart_total", "Cart total (example: 24.50)", TextInputStyle.Short, true, "$0.00"),
       modalField(
         "pickup_delivery",
-        "Pickup or delivery details",
+        pickupLabel,
         TextInputStyle.Paragraph,
         true,
+        restaurant.pickupOnly ? "Pickup only; enter pickup location" : undefined,
       ),
       modalField("contact", "Contact details (optional)", TextInputStyle.Short, false),
       modalField("notes", "Extra notes (optional)", TextInputStyle.Paragraph, false),
@@ -323,7 +340,7 @@ export function ticketEmbed(ticket: TicketRecord) {
   if (ticket.kind === "order") {
     embed
       .addFields(
-        { name: "🍽️ Restaurant", value: getRestaurant(ticket.restaurantId ?? "")?.name ?? "—", inline: true },
+        { name: "🍽️ Restaurant", value: getRestaurantDisplayName(ticket.restaurantId ?? "") ?? "—", inline: true },
         { name: "💳 Payment", value: getPaymentMethod(ticket.paymentMethodId ?? "")?.name ?? "—", inline: true },
         {
           name: "👨‍🍳 Chef route",
@@ -378,7 +395,7 @@ export function ticketButtons(ticket: TicketRecord) {
       .setDisabled(!ticket.claimedBy || ticket.status === "completed"),
     new ButtonBuilder()
       .setCustomId(`ticket:complete:${ticket.channelId}`)
-      .setLabel("Complete order")
+      .setLabel("Verify & Complete")
       .setEmoji("✅")
       .setStyle(ButtonStyle.Success)
       .setDisabled(ticket.kind !== "order" || !ticket.claimedBy || ticket.status === "completed"),
@@ -414,24 +431,25 @@ export function ticketButtons(ticket: TicketRecord) {
 }
 
 export function completedOrderEmbed(order: CompletedOrder) {
-  const restaurant = getRestaurant(order.restaurantId)?.name ?? "Restaurant";
+  const restaurant = getRestaurantDisplayName(order.restaurantId) ?? "Restaurant";
   const payment = getPaymentMethod(order.paymentMethodId)?.name ?? "Payment";
   return new EmbedBuilder()
     .setColor(green)
     .setTitle("✅ Cheap Eats — Order Completed")
-    .setDescription(`**${restaurant}** is complete.`)
+    .setDescription(`A food order was successfully checked out and confirmed.\n\n**${restaurant}** is complete.`)
     .addFields(
       { name: "🍽️ Restaurant", value: restaurant, inline: true },
       { name: "💳 Payment", value: payment, inline: true },
       { name: "🏷️ Final charge", value: order.finalCharge, inline: true },
       { name: "👤 Customer", value: `<@${order.customerId}>`, inline: true },
       { name: "👨‍🍳 Chef", value: `<@${order.claimedBy}>`, inline: true },
-      { name: "🛡️ Confirmed by", value: `<@${order.completedBy}>`, inline: true },
+      { name: "💬 Ticket", value: order.ticketChannelId ? `<#${order.ticketChannelId}>` : "—", inline: true },
       {
         name: "⏱️ Completed in",
         value: formatDuration(order.completedAt - order.openedAt),
         inline: true,
       },
+      { name: "🛡️ Confirmed by", value: `<@${order.completedBy}>`, inline: true },
     )
     .setFooter({ text: "Completed by an authorized order verifier." });
 }
@@ -454,7 +472,7 @@ export function vouchEmbed(order: CompletedOrder, text: string) {
     .setDescription(text)
     .addFields(
       { name: "Customer", value: `<@${order.customerId}>`, inline: true },
-      { name: "Restaurant", value: getRestaurant(order.restaurantId)?.name ?? "—", inline: true },
+      { name: "Restaurant", value: getRestaurantDisplayName(order.restaurantId) ?? "—", inline: true },
     )
     .setFooter({ text: `Verified completed order · ${new Date(order.completedAt).toLocaleDateString("en-US")}` });
 }
@@ -473,30 +491,3 @@ export function vouchModal(orderId: string, completionChannelId: string, message
     );
 }
 
-export function statusAnnouncement(config: ServerConfig, ping: boolean) {
-  const text =
-    config.status.state === "open"
-      ? "Orders are now open."
-      : config.status.state === "slow"
-        ? "Orders are open, but service is currently slow."
-        : "Orders are now closed.";
-  const mention = ping && config.status.state === "open" ? `<@&${config.roles.statusPing}> ` : "";
-  return {
-    content: `${mention}${statusLabel(config.status.state)} — ${text}`,
-    embeds: [
-      new EmbedBuilder()
-        .setColor(
-          config.status.state === "open"
-            ? green
-            : config.status.state === "slow"
-              ? 0xf1c40f
-              : 0xe74c3c,
-        )
-        .setDescription(config.status.reason || text),
-    ],
-    allowedMentions: {
-      parse: [],
-      roles: ping && config.status.state === "open" ? [config.roles.statusPing] : [],
-    },
-  };
-}

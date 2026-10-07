@@ -3,7 +3,7 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
-import { RESTAURANTS } from "./domain.js";
+import { CHANNEL_SETTINGS, ROLE_SETTINGS } from "./settings.js";
 
 const adminOnly = PermissionFlagsBits.Administrator;
 
@@ -156,7 +156,7 @@ export const slashCommands = [
       option
         .setName("restaurant")
         .setDescription("Restaurant to make available or unavailable.")
-        .addChoices(...RESTAURANTS.map(({ id, name }) => ({ name, value: id })))
+        .setAutocomplete(true)
         .setRequired(true),
     )
     .addBooleanOption((option) =>
@@ -165,6 +165,33 @@ export const slashCommands = [
         .setDescription("Whether customers can select this restaurant.")
         .setRequired(true),
     ),
+  new SlashCommandBuilder()
+    .setName("menu")
+    .setDescription("Post or refresh the full restaurant menu."),
+  ...CHANNEL_SETTINGS.map((setting) =>
+    new SlashCommandBuilder()
+      .setName(setting.name)
+      .setDescription(setting.description)
+      .addChannelOption((option) =>
+        option
+          .setName("channel")
+          .setDescription("Channel to use for this setting.")
+          .addChannelTypes(
+            setting.channelType === "category"
+              ? ChannelType.GuildCategory
+              : ChannelType.GuildText,
+          )
+          .setRequired(true),
+      ),
+  ),
+  ...ROLE_SETTINGS.map((setting) =>
+    new SlashCommandBuilder()
+      .setName(setting.name)
+      .setDescription(setting.description)
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to use for this setting.").setRequired(true),
+      ),
+  ),
   new SlashCommandBuilder()
     .setName("access")
     .setDescription("Manage who can use Cheap Eats management commands.")

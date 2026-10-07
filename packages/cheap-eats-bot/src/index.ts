@@ -8,6 +8,7 @@ import {
   MessageFlags,
   PermissionFlagsBits,
   TextChannel,
+  type AutocompleteInteraction,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
@@ -29,17 +30,18 @@ import {
   type ServiceStatus,
   type TicketRecord,
 } from "./domain.js";
-import { upsertAllPanels, upsertPanel } from "./panels.js";
+import { upsertAllPanels, upsertPanel, type PanelKey } from "./panels.js";
+import { CHANNEL_SETTINGS, ROLE_SETTINGS } from "./settings.js";
 import { activeTicketKey, createServerConfig, JsonStore } from "./store.js";
 import { createTranscriptAttachments } from "./transcripts.js";
 import {
   categoryMenu,
   completionModal,
   completedOrderEmbed,
+  statusPanel,
   orderModal,
   paymentMenu,
   restaurantMenu,
-  statusAnnouncement,
   ticketButtons,
   ticketEmbed,
   vouchButton,
@@ -54,6 +56,7 @@ if (!token) throw new Error("Set DISCORD_TOKEN in .env before starting the bot."
 const store = new JsonStore();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const pendingTicketCreations = new Set<string>();
+const pendingTicketClosures = new Set<string>();
 
 type GuildInteraction =
   | ButtonInteraction
@@ -138,6 +141,10 @@ function parseUsd(value: string): string | undefined {
   return `$${amount.toFixed(2)}`;
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function safeChannelName(value: string): string {
   return (
     value
@@ -158,6 +165,50 @@ function requireTextChannel(guild: Guild, channelId: string, label: string): Pro
     }
     return channel as TextChannel;
   });
+}
+
+function desiredStatusChannelName(state: ServiceStatus): string {
+  return {
+    open: "『🟢』 open",
+    slow: "『🟡』 slow",
+    closed: "『🔴』 closed",
+  }[state];
+}
+
+async function syncStatusChannelName(guild: Guild, config: ServerConfig): Promise<boolean> {
+  const channel = await requireTextChannel(guild, config.channels.status, "status channel");
+  const name = desiredStatusChannelName(config.status.state);
+  if (channel.name === name) return true;
+  try {
+    await channel.setName(name, "Match the channel name to the current Cheap Eats service status.");
+    return true;
+  } catch (error) {
+    console.error("Could not rename the Cheap Eats status channel:", error);
+    return false;
+  }
+}
+
+async function removePreviousStatusAnnouncements(
+  channel: TextChannel,
+  keepMessageId: string,
+): Promise<void> {
+  if (!client.user) return;
+  const oldAnnouncement =
+    /^(?:<@&\d+>\s*)?(?:🟢 Open — Orders are now open\.|🟡 Slow — Orders are open, but service is currently slow\.|🔴 Closed — Orders are now closed\.)$/u;
+  try {
+    const messages = await channel.messages.fetch({ limit: 100 });
+    for (const message of messages.values()) {
+      if (
+        message.id !== keepMessageId &&
+        message.author.id === client.user.id &&
+        oldAnnouncement.test(message.content)
+      ) {
+        await message.delete();
+      }
+    }
+  } catch (error) {
+    console.error("Could not remove previous Cheap Eats status announcements:", error);
+  }
 }
 
 async function openPrivateTicket(
@@ -311,8 +362,16 @@ async function handleSetup(interaction: ChatInputCommandInteraction): Promise<vo
   store.getState().servers[guild.id] = config;
   await store.save();
   await upsertAllPanels(guild, config, store);
+  const statusChannelRenamed = await syncStatusChannelName(guild, config);
+  const statusChannel = await requireTextChannel(guild, config.channels.status, "status channel");
+  const statusPanelRef = config.panels.status;
+  if (statusPanelRef) {
+    await removePreviousStatusAnnouncements(statusChannel, statusPanelRef.messageId);
+  }
   await interaction.editReply(
-    "Setup is complete. Order, support, menu, FAQ, status, and vouch panels are ready.",
+    statusChannelRenamed
+      ? "Setup is complete. Order, support, menu, FAQ, status, and vouch panels are ready."
+      : "Setup is complete, but I could not rename the status channel. Give the bot Manage Channels permission.",
   );
 }
 
@@ -346,13 +405,22 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
     updatedAt: Date.now(),
   };
   await store.save();
-  await upsertPanel(interaction.guild, config, "status", store);
   const statusChannel = await requireTextChannel(interaction.guild, config.channels.status, "status channel");
-  await statusChannel.send(statusAnnouncement(config, ping));
+  const statusChannelRenamed = await syncStatusChannelName(interaction.guild, config);
+  const statusMessage = await upsertPanel(interaction.guild, config, "status", store, {
+    payload: statusPanel(config, ping),
+    replaceExisting: true,
+  });
+  await removePreviousStatusAnnouncements(statusChannel, statusMessage.id);
   await interaction.editReply(
-    ping && state === "open"
-      ? "Status updated to Open and the configured status role was mentioned."
-      : "Service status updated.",
+    [
+      ping && state === "open"
+        ? "Status updated to Open and the configured status role was mentioned."
+        : "Service status updated.",
+      statusChannelRenamed ? "" : "I could not rename the status channel; give the bot Manage Channels permission.",
+    ]
+      .filter(Boolean)
+      .join(" "),
   );
 }
 
@@ -385,6 +453,127 @@ async function handleRestaurant(interaction: ChatInputCommandInteraction): Promi
   await interaction.editReply(
     `${restaurant.name} is now ${available ? "available" : "unavailable"} in the order menu.`,
   );
+}
+
+async function handleMenuRefresh(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await replyPrivate(interaction, "Run this command inside your server.");
+    return;
+  }
+  const config = getGuildConfig(interaction);
+  if (!config) {
+    await replyPrivate(interaction, "An administrator must run /setup before the bot can be used.");
+    return;
+  }
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can refresh the menu.");
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await upsertPanel(interaction.guild, config, "menu", store);
+  await interaction.editReply(`The restaurant menu was refreshed in <#${config.channels.menu}>.`);
+}
+
+async function handleChannelSetting(
+  interaction: ChatInputCommandInteraction,
+  setting: (typeof CHANNEL_SETTINGS)[number],
+): Promise<void> {
+  if (!interaction.guild) {
+    await replyPrivate(interaction, "Run this command inside your server.");
+    return;
+  }
+  const config = getGuildConfig(interaction);
+  if (!config) {
+    await replyPrivate(interaction, "Run /setup once before using individual channel settings.");
+    return;
+  }
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can change bot settings.");
+    return;
+  }
+
+  const selectedChannel = interaction.options.getChannel("channel", true);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  config.channels[setting.channelKey] = selectedChannel.id;
+  await store.save();
+
+  const panelsToRefresh = new Set<PanelKey>();
+  if (setting.panelKey) panelsToRefresh.add(setting.panelKey);
+  if (setting.channelKey === "orderPanel") {
+    panelsToRefresh.add("menu");
+    panelsToRefresh.add("status");
+  }
+  for (const panelKey of panelsToRefresh) {
+    await upsertPanel(interaction.guild, config, panelKey, store);
+  }
+
+  let statusChannelRenamed = true;
+  if (setting.channelKey === "status") {
+    statusChannelRenamed = await syncStatusChannelName(interaction.guild, config);
+  }
+  if (panelsToRefresh.has("status")) {
+    const statusChannel = await requireTextChannel(
+      interaction.guild,
+      config.channels.status,
+      "status channel",
+    );
+    const statusPanelRef = config.panels.status;
+    if (statusPanelRef) {
+      await removePreviousStatusAnnouncements(statusChannel, statusPanelRef.messageId);
+    }
+  }
+  await interaction.editReply(
+    statusChannelRenamed
+      ? `Updated the channel setting to <#${selectedChannel.id}>.`
+      : `Updated the channel setting to <#${selectedChannel.id}>, but I could not rename it. Give the bot Manage Channels permission.`,
+  );
+}
+
+async function handleRoleSetting(
+  interaction: ChatInputCommandInteraction,
+  setting: (typeof ROLE_SETTINGS)[number],
+): Promise<void> {
+  if (!interaction.guild) {
+    await replyPrivate(interaction, "Run this command inside your server.");
+    return;
+  }
+  const config = getGuildConfig(interaction);
+  if (!config) {
+    await replyPrivate(interaction, "Run /setup once before using individual role settings.");
+    return;
+  }
+  if (!canManageBot(interaction)) {
+    await replyPrivate(interaction, "Only a server administrator or approved manager can change bot settings.");
+    return;
+  }
+
+  const role = interaction.options.getRole("role", true);
+  if (setting.roleKey) {
+    config.roles[setting.roleKey] = role.id;
+  } else if (setting.paymentMethodId) {
+    config.roles.paymentRoutes[setting.paymentMethodId] = role.id;
+  }
+  await store.save();
+  await interaction.reply({
+    content: `Updated ${setting.description.slice(0, -1)} to <@&${role.id}>.`,
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  if (interaction.commandName !== "restaurant") {
+    await interaction.respond([]);
+    return;
+  }
+  const query = interaction.options.getFocused().toLocaleLowerCase();
+  const choices = RESTAURANTS.filter((restaurant) =>
+    restaurant.name.toLocaleLowerCase().includes(query),
+  )
+    .slice(0, 25)
+    .map((restaurant) => ({ name: restaurant.name, value: restaurant.id }));
+  await interaction.respond(choices);
 }
 
 async function replyManagementAccessList(
@@ -455,7 +644,7 @@ async function handleAccess(interaction: ChatInputCommandInteraction): Promise<v
     store.setManagementAccessUsers(guildId, [...userIds, user.id]);
     await store.save();
     await interaction.reply({
-      content: `<@${user.id}> can now run /setup, /status, and /restaurant.`,
+      content: `<@${user.id}> can now run /setup, /status, /restaurant, /menu, and the individual set-* configuration commands.`,
       flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
@@ -535,9 +724,25 @@ async function handleCommand(interaction: ChatInputCommandInteraction): Promise<
     case "restaurant":
       await handleRestaurant(interaction);
       break;
+    case "menu":
+      await handleMenuRefresh(interaction);
+      break;
     case "access":
       await handleAccess(interaction);
       break;
+    default: {
+      const channelSetting = CHANNEL_SETTINGS.find(
+        (setting) => setting.name === interaction.commandName,
+      );
+      if (channelSetting) {
+        await handleChannelSetting(interaction, channelSetting);
+        return;
+      }
+      const roleSetting = ROLE_SETTINGS.find(
+        (setting) => setting.name === interaction.commandName,
+      );
+      if (roleSetting) await handleRoleSetting(interaction, roleSetting);
+    }
   }
 }
 
@@ -702,7 +907,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
 
   if (action === "complete") {
     if (!isAdministrator(interaction) && !hasRole(interaction, config.roles.verifier)) {
-      await replyPrivate(interaction, "Only the configured verifier role can complete an order.");
+      await replyPrivate(interaction, "Only the configured verifier role or a server administrator can complete an order.");
       return;
     }
     if (ticket.kind !== "order") {
@@ -833,6 +1038,11 @@ async function handleOrderModal(interaction: ModalSubmitInteraction): Promise<vo
     await replyPrivate(interaction, "Enter the cart total as a valid amount, such as 24.50.");
     return;
   }
+  const pickupOrDelivery = interaction.fields.getTextInputValue("pickup_delivery").trim();
+  if (restaurant.pickupOnly && /\bdeliver(?:y|ies)?\b/i.test(pickupOrDelivery)) {
+    await replyPrivate(interaction, `${restaurant.name} is pickup only. Remove the delivery request and submit pickup details.`);
+    return;
+  }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const id = randomUUID();
@@ -853,7 +1063,7 @@ async function handleOrderModal(interaction: ModalSubmitInteraction): Promise<vo
     paymentMethodId: payment.id,
     items: interaction.fields.getTextInputValue("items").trim(),
     cartTotal,
-    pickupOrDelivery: interaction.fields.getTextInputValue("pickup_delivery").trim(),
+    pickupOrDelivery,
     contact: interaction.fields.getTextInputValue("contact").trim(),
     notes: interaction.fields.getTextInputValue("notes").trim(),
   };
@@ -898,7 +1108,7 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
     return;
   }
   if (!isAdministrator(interaction) && !hasRole(interaction, config.roles.verifier)) {
-    await replyPrivate(interaction, "Only the configured verifier role can complete an order.");
+      await replyPrivate(interaction, "Only the configured verifier role or a server administrator can complete an order.");
     return;
   }
   if (ticket.status !== "open" || !ticket.claimedBy) {
@@ -925,6 +1135,7 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
   const order: CompletedOrder = {
     id: randomUUID(),
     guildId: interaction.guild.id,
+    ticketChannelId: ticket.channelId,
     customerId: ticket.ownerId,
     restaurantId,
     paymentMethodId,
@@ -934,16 +1145,34 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
     claimedBy: ticket.claimedBy,
     completedBy: interaction.user.id,
   };
-  const completionChannel = await requireTextChannel(
-    interaction.guild,
-    config.channels.completed,
-    "completed-orders channel",
-  );
-  const completionMessage = await completionChannel.send({
-    embeds: [completedOrderEmbed(order)],
-    components: [vouchButton(order)],
-    allowedMentions: { parse: [] },
-  });
+  let completionChannel: TextChannel;
+  try {
+    completionChannel = await requireTextChannel(
+      interaction.guild,
+      config.channels.completed,
+      "completed-orders channel",
+    );
+  } catch (error) {
+    console.error("Could not access the configured completed-orders channel:", error);
+    await interaction.editReply(
+      "I couldn't find the configured completed-orders channel. Ask an admin to set it with /set-completed-orders-channel.",
+    );
+    return;
+  }
+  let completionMessage;
+  try {
+    completionMessage = await completionChannel.send({
+      embeds: [completedOrderEmbed(order)],
+      components: [vouchButton(order)],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error("Could not post the verified completed order:", error);
+    await interaction.editReply(
+      `I couldn't post in <#${completionChannel.id}>. Give the bot View Channel, Send Messages, and Embed Links permissions, then try again.`,
+    );
+    return;
+  }
   order.completionMessage = {
     channelId: completionChannel.id,
     messageId: completionMessage.id,
@@ -956,20 +1185,26 @@ async function handleCompletionModal(interaction: ModalSubmitInteraction): Promi
   store.getState().completedOrders[order.id] = order;
   await store.save();
 
-  const ticketChannel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
-  await ticketChannel.send({
-    content: "✅ This order was completed and verified. The customer can leave a vouch from the completed-order post.",
-    allowedMentions: { parse: [] },
-  });
-  if (ticket.panelMessageId) {
-    const ticketCard = await ticketChannel.messages.fetch(ticket.panelMessageId);
-    await ticketCard.edit({
-      embeds: [ticketEmbed(ticket)],
-      components: ticketButtons(ticket),
+  try {
+    const ticketChannel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
+    await ticketChannel.send({
+      content: "✅ This order was completed and verified. The customer can leave a vouch from the completed-order post.",
       allowedMentions: { parse: [] },
     });
+    if (ticket.panelMessageId) {
+      const ticketCard = await ticketChannel.messages.fetch(ticket.panelMessageId);
+      await ticketCard.edit({
+        embeds: [ticketEmbed(ticket)],
+        components: ticketButtons(ticket),
+        allowedMentions: { parse: [] },
+      });
+    }
+  } catch (error) {
+    console.error("The completion post succeeded, but the ticket panel could not be updated:", error);
   }
-  await interaction.editReply("The order has been verified and posted to the completed-orders channel.");
+  await interaction.editReply(
+    `The order was verified and posted to <#${completionChannel.id}>: ${completionMessage.url}`,
+  );
 }
 
 async function closeTicket(
@@ -981,44 +1216,114 @@ async function closeTicket(
     await replyPrivate(interaction, "Close this ticket from inside its server.");
     return;
   }
-  const channel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
-  if (!config.channels.transcripts) {
-    await replyPrivate(interaction, "An administrator must rerun /setup to configure the transcript channel.");
+  if (pendingTicketClosures.has(ticket.channelId)) {
+    await replyPrivate(interaction, "This ticket is already closing.");
     return;
   }
-  const transcriptChannel = await requireTextChannel(
-    interaction.guild,
-    config.channels.transcripts,
-    "ticket-transcripts",
-  );
-  await interaction.deferUpdate();
-  const transcriptFiles = await createTranscriptAttachments(channel, ticket, interaction.user.id);
-  await transcriptChannel.send({
-    content: `📄 Saved ${ticket.kind} ticket transcript for #${channel.name}.`,
-    files: transcriptFiles,
-    allowedMentions: { parse: [] },
-  });
-  await channel.permissionOverwrites.edit(ticket.ownerId, {
-    ViewChannel: false,
-    SendMessages: false,
-    ReadMessageHistory: false,
-  });
-  await channel.setName(`closed-${channel.name.replace(/^(order|support)-/, "")}`.slice(0, 90));
-  await interaction.message.edit({ components: [] });
-  await channel.send({
-    content: `🔒 Ticket closed by <@${interaction.user.id}>.`,
-    allowedMentions: { users: [interaction.user.id], parse: [] },
-  });
+  pendingTicketClosures.add(ticket.channelId);
+  let controlsDisabled = false;
+  let customerMessagingDisabled = false;
+  let customerAccessRemoved = false;
+  let channelRenamed = false;
+  let channel: TextChannel | undefined;
+  let originalChannelName = "";
+  try {
+    channel = await requireTextChannel(interaction.guild, ticket.channelId, "ticket");
+    originalChannelName = channel.name;
+    if (!config.channels.transcripts) {
+      await replyPrivate(interaction, "An administrator must rerun /setup to configure the transcript channel.");
+      return;
+    }
+    const transcriptChannel = await requireTextChannel(
+      interaction.guild,
+      config.channels.transcripts,
+      "ticket-transcripts",
+    );
+    await interaction.deferUpdate();
+    await interaction.message.edit({ components: [] });
+    controlsDisabled = true;
 
-  delete store.getState().tickets[ticket.channelId];
-  delete store.getState().activeTickets[
-    activeTicketKey(ticket.guildId, ticket.ownerId, ticket.kind)
-  ];
-  await store.save();
-  await interaction.followUp({
-    content: "Ticket closed. The customer's access to the private channel has been removed.",
-    flags: MessageFlags.Ephemeral,
-  });
+    await channel.send({
+      content: "📄 Preparing the transcript. The 5-second close countdown will start after it is saved.",
+      allowedMentions: { parse: [] },
+    });
+    const transcriptFiles = await createTranscriptAttachments(channel, ticket, interaction.user.id);
+    await transcriptChannel.send({
+      content: `📄 Saved ${ticket.kind} ticket transcript for #${channel.name}.`,
+      files: transcriptFiles,
+      allowedMentions: { parse: [] },
+    });
+    customerMessagingDisabled = true;
+    await channel.permissionOverwrites.edit(ticket.ownerId, {
+      SendMessages: false,
+    });
+
+    const countdown = await channel.send({
+      content: "🔒 This ticket will close and be archived in 5 seconds.",
+      allowedMentions: { parse: [] },
+    });
+    for (let secondsRemaining = 4; secondsRemaining >= 1; secondsRemaining -= 1) {
+      await delay(1000);
+      await countdown.edit(
+        `🔒 This ticket will close and be archived in ${secondsRemaining} second${secondsRemaining === 1 ? "" : "s"}.`,
+      );
+    }
+    await delay(1000);
+    await countdown.edit("🔒 Transcript saved. Removing customer access; the staff archive will be retained.");
+
+    await channel.setName(`closed-${channel.name.replace(/^(order|support)-/, "")}`.slice(0, 90));
+    channelRenamed = true;
+    await channel.permissionOverwrites.edit(ticket.ownerId, {
+      ViewChannel: false,
+      SendMessages: false,
+      ReadMessageHistory: false,
+    });
+    customerAccessRemoved = true;
+    customerMessagingDisabled = false;
+    await channel.send({
+      content: `🔒 Ticket closed by <@${interaction.user.id}>. This staff archive is retained.`,
+      allowedMentions: { users: [interaction.user.id], parse: [] },
+    }).catch((error) => {
+      console.error("Ticket access was closed, but the close notice could not be posted:", error);
+    });
+
+    delete store.getState().tickets[ticket.channelId];
+    delete store.getState().activeTickets[
+      activeTicketKey(ticket.guildId, ticket.ownerId, ticket.kind)
+    ];
+    await store.save();
+    await interaction.followUp({
+      content: `Ticket closed and archived. The customer's access is removed; staff can retain the channel. Transcript saved in <#${transcriptChannel.id}>.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  } catch (error) {
+    if (channel && !customerAccessRemoved) {
+      if (customerMessagingDisabled) {
+        await channel.permissionOverwrites.edit(ticket.ownerId, { SendMessages: true }).catch((restoreError) => {
+          console.error("Could not restore ticket-owner messaging after close failed:", restoreError);
+        });
+      }
+      if (channelRenamed) {
+        await channel.setName(originalChannelName).catch((restoreError) => {
+          console.error("Could not restore the ticket channel name after close failed:", restoreError);
+        });
+      }
+    }
+    if (controlsDisabled && !customerAccessRemoved) {
+      try {
+        await interaction.message.edit({
+          embeds: [ticketEmbed(ticket)],
+          components: ticketButtons(ticket),
+          allowedMentions: { parse: [] },
+        });
+      } catch (restoreError) {
+        console.error("Could not restore a ticket panel after close failed:", restoreError);
+      }
+    }
+    throw error;
+  } finally {
+    pendingTicketClosures.delete(ticket.channelId);
+  }
 }
 
 async function handleVouchModal(interaction: ModalSubmitInteraction): Promise<void> {
@@ -1089,6 +1394,19 @@ client.once("ready", (readyClient) => {
 });
 
 client.on("interactionCreate", async (interaction: Interaction) => {
+  if (interaction.isAutocomplete()) {
+    try {
+      await handleAutocomplete(interaction);
+    } catch (error) {
+      console.error("Restaurant autocomplete failed:", error);
+      if (!interaction.responded) {
+        await interaction.respond([]).catch((respondError) => {
+          console.error("Could not respond to restaurant autocomplete:", respondError);
+        });
+      }
+    }
+    return;
+  }
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) {
     return;
   }

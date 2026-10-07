@@ -19,6 +19,13 @@ const panelChannels = {
   vouches: "vouches",
 } as const;
 
+export type PanelKey = keyof typeof panelChannels;
+
+interface UpsertPanelOptions {
+  payload?: ReturnType<typeof getPanelPayload>;
+  replaceExisting?: boolean;
+}
+
 function getPanelPayload(key: keyof typeof panelChannels, config: ServerConfig) {
   switch (key) {
     case "order":
@@ -39,8 +46,9 @@ function getPanelPayload(key: keyof typeof panelChannels, config: ServerConfig) 
 export async function upsertPanel(
   guild: Guild,
   config: ServerConfig,
-  key: keyof typeof panelChannels,
+  key: PanelKey,
   store: JsonStore,
+  options: UpsertPanelOptions = {},
 ): Promise<Message> {
   const channelId = config.channels[panelChannels[key]];
   const channel = await guild.channels.fetch(channelId);
@@ -48,15 +56,20 @@ export async function upsertPanel(
     throw new Error(`Configured ${key} channel is missing or is not a text channel.`);
   }
 
-  const payload = getPanelPayload(key, config);
+  const payload = options.payload ?? getPanelPayload(key, config);
   const previous = config.panels[key];
+  let previousMessage: Message | undefined;
   if (previous?.channelId === channel.id) {
     try {
       const existing = await (channel as TextChannel).messages.fetch(previous.messageId);
-      const updated = await existing.edit(payload);
-      config.panels[key] = { channelId: channel.id, messageId: updated.id };
-      await store.save();
-      return updated;
+      if (options.replaceExisting) {
+        previousMessage = existing;
+      } else {
+        const updated = await existing.edit(payload);
+        config.panels[key] = { channelId: channel.id, messageId: updated.id };
+        await store.save();
+        return updated;
+      }
     } catch (error) {
       const isMissingMessage =
         typeof error === "object" &&
@@ -70,6 +83,25 @@ export async function upsertPanel(
   const created = await (channel as TextChannel).send(payload);
   config.panels[key] = { channelId: channel.id, messageId: created.id };
   await store.save();
+  if (previous && previous.messageId !== created.id) {
+    try {
+      if (previousMessage) {
+        await previousMessage.delete();
+      } else {
+        const oldChannel = await guild.channels.fetch(previous.channelId);
+        if (oldChannel?.type === ChannelType.GuildText) {
+          const oldMessage = await (oldChannel as TextChannel).messages.fetch(previous.messageId);
+          await oldMessage.delete();
+        }
+      }
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: number }).code
+          : undefined;
+      if (code !== 10003 && code !== 10008) throw error;
+    }
+  }
   return created;
 }
 

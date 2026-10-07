@@ -1,0 +1,76 @@
+export const CHANNEL_SETTINGS = [
+  {
+    name: "set-order-channel",
+    description: "Choose the channel where members start orders.",
+    channelKey: "orderPanel",
+    channelType: "text",
+    panelKey: "order",
+  },
+  {
+    name: "set-support-channel",
+    description: "Choose the channel where members open support tickets.",
+    channelKey: "supportPanel",
+    channelType: "text",
+    panelKey: "support",
+  },
+  {
+    name: "set-menu-channel",
+    description: "Choose the channel where the restaurant menu is posted.",
+    channelKey: "menu",
+    channelType: "text",
+    panelKey: "menu",
+  },
+  {
+    name: "set-faq-channel",
+    description: "Choose the channel where ordering FAQs are posted.",
+    channelKey: "faq",
+    channelType: "text",
+    panelKey: "faq",
+  },
+  {
+    name: "set-status-channel",
+    description: "Choose the channel where service status is posted.",
+    channelKey: "status",
+    channelType: "text",
+    panelKey: "status",
+  },
+  {
+    name: "set-ticket-category",
+    description: "Choose the category where private tickets are created.",
+    channelKey: "ticketCategory",
+    channelType: "category",
+    panelKey: undefined,
+  },
+  {
+    name: "set-completed-orders-channel",
+    description: "Choose where verified completed orders are posted.",
+    channelKey: "completed",
+    channelType: "text",
+    panelKey: undefined,
+  },
+  {
+    name: "set-vouches-channel",
+    description: "Choose where customer vouches are posted.",
+    channelKey: "vouches",
+    channelType: "text",
+    panelKey: "vouches",
+  },
+  {
+    name: "set-transcripts-channel",
+    description: "Choose the private channel where ticket transcripts are saved.",
+    channelKey: "transcripts",
+    channelType: "text",
+    panelKey: undefined,
+  },
+] as const;
+
+export const ROLE_SETTINGS = [
+  { name: "set-staff-role", description: "Choose the general ticket staff role.", roleKey: "staff", paymentMethodId: undefined },
+  { name: "set-unclaim-role", description: "Choose who can unclaim open tickets.", roleKey: "unclaim", paymentMethodId: undefined },
+  { name: "set-verifier-role", description: "Choose who can verify completed orders.", roleKey: "verifier", paymentMethodId: undefined },
+  { name: "set-status-ping-role", description: "Choose the role members can opt into for status pings.", roleKey: "statusPing", paymentMethodId: undefined },
+  { name: "set-cash-app-role", description: "Choose which staff role receives Cash App orders.", roleKey: undefined, paymentMethodId: "cash-app" },
+  { name: "set-crypto-role", description: "Choose which staff role receives Crypto orders.", roleKey: undefined, paymentMethodId: "crypto" },
+  { name: "set-zelle-role", description: "Choose which staff role receives Zelle orders.", roleKey: undefined, paymentMethodId: "zelle" },
+  { name: "set-venmo-role", description: "Choose which staff role receives Venmo orders.", roleKey: undefined, paymentMethodId: "venmo" },
+] as const;

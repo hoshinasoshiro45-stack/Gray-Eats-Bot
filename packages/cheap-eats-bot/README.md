@@ -4,11 +4,38 @@ A Discord bot source package for a small food-ordering server. Members can open 
 
 ## Included restaurant and payment choices
 
-- Wingstop
-- Cinnabon
-- Chili's
-- Dave's Hot Chicken — starts unavailable; staff can turn it on when it is being offered
-- Shake Shack
+- Domino's
+- Papa John's
+- Church's Chicken
+- Jersey Mike's Subs
+- Panda Express
+- Auntie Anne's
+- Panera Bread
+- IHOP — starts unavailable; staff can turn it on when offered
+- Smoothie King — starts unavailable; staff can turn it on when offered
+- Applebee's
+- Tropical Smoothie Cafe
+- Sonic
+- Buffalo Wild Wings
+- Marco's Pizza
+- Jim N Nick's Bar-B-Q
+- CAVA
+- Fluffies Hot Chicken
+- Steak 'n Shake
+- Taco Cabana
+- Raising Cane's Chicken Fingers — pickup only
+- McAlister's Deli
+- Carl's Jr.
+- Whataburger
+- Zaxby's
+- Red Lobster
+- P.F. Chang's
+- Jamba
+- Playa Bowls
+- Five Guys
+- The Habit Burger Grill
+- Smashburger
+- Insomnia Cookies
 
 Accepted payment selections are Cash App, Crypto, Zelle, and Venmo. Apple Pay, PayPal, and Chime are not included. The bot records a selected payment method; it does not process payments.
 
@@ -67,7 +94,7 @@ This is a long-running Discord Gateway bot, not a web app. A host that stops idl
 
 ## Configure the server
 
-Server administrators always retain bot-management access. Use `/access grant @user`, `/access revoke @user`, and `/access list` to manage who else may run `/setup`, `/status`, and `/restaurant`. Only server administrators can change this access list. Order and support panels remain available to server members, while staff roles continue to control ticket actions.
+Server administrators always retain bot-management access. Use `/access grant @user`, `/access revoke @user`, and `/access list` to manage who else may run management commands. Only server administrators can change this access list. Order and support panels remain available to server members, while staff roles continue to control ticket actions.
 
 Run `/setup` as a server administrator or an approved manager and select the channels and roles:
 
@@ -78,15 +105,17 @@ Run `/setup` as a server administrator or an approved manager and select the cha
 - **Status notification role:** members can add or remove this role with the Notifications button. Staff can mention subscribers when opening orders with `ping: true`.
 - **Payment route roles:** one role each for Cash App, Crypto, Zelle, and Venmo. The selected role is mentioned and granted access to its routed order ticket; members of that role can claim it.
 
+Run `/setup` once to establish the configuration. After that, each setting can be changed individually with `/set-order-channel`, `/set-support-channel`, `/set-menu-channel`, `/set-faq-channel`, `/set-status-channel`, `/set-ticket-category`, `/set-completed-orders-channel`, `/set-vouches-channel`, `/set-transcripts-channel`, `/set-staff-role`, `/set-unclaim-role`, `/set-verifier-role`, `/set-status-ping-role`, `/set-cash-app-role`, `/set-crypto-role`, `/set-zelle-role`, or `/set-venmo-role`. `/setup` remains available as the all-in-one shortcut. `/menu` republishes the full list, and `/restaurant` switches an individual restaurant on or off.
+
 Keep the transcript archive staff-only because transcripts can contain customer contact or delivery details. The ticket category should be private to the bot and the roles that should see tickets. The bot creates private channels and grants access to the customer, configured staff, the selected payment route, unclaim role, and verifier role while denying `@everyone`. Place the bot's highest role above the status notification role so it can add or remove subscriptions. Make the notification and payment-route roles mentionable, or grant the bot permission to mention roles.
 
 The status starts as Closed. Configure it with `/status`:
 
-- `/status state:Open ping:true` updates the panel and announces Open with a mention to subscribed members.
-- `/status state:Slow` announces that orders are open with a longer wait expected.
-- `/status state:Closed` announces that orders are not being accepted.
+- `/status state:Open ping:true` replaces the previous status post, renames the channel to `『🟢』 open`, and mentions subscribed members.
+- `/status state:Slow` replaces the post and renames the channel to `『🟡』 slow`.
+- `/status state:Closed` replaces the post and renames the channel to `『🔴』 closed`.
 
-Staff can use `/restaurant` to make a restaurant available or unavailable. Dave's Hot Chicken starts unavailable until staff turn it on.
+Staff can use `/restaurant` to make a restaurant available or unavailable. IHOP and Smoothie King start unavailable; Raising Cane's orders are pickup only.
 
 ## Ticket and vouch behavior
 
@@ -95,8 +124,8 @@ Staff can use `/restaurant` to make a restaurant available or unavailable. Dave'
 - A member of the selected payment route role or the general staff role can claim an open order ticket. Its panel shows the assignee and the routed role.
 - The assigned staff member or a server administrator can mark the total, payment, and order-placement checklist items. A verifier cannot complete the order until all three are marked.
 - Only the configured unclaim role (or a server administrator) can unclaim an open ticket.
-- Only the verifier role (or a server administrator) can complete a claimed order. Completion asks for the final charge and posts the restaurant, payment, charge, assigned staff member, verifier, customer, and elapsed time in the completed-orders channel.
-- The ticket owner, general staff, or routed payment team can close a ticket. Closing saves a text transcript in the configured archive channel, removes the customer's access, and clears the ticket's active form data from the bot's local state. The private Discord channel remains available to staff.
+- Only the verifier role (or a server administrator) can complete a claimed order after all checklist items are checked. Completion asks for the final charge and posts the restaurant, payment, charge, ticket, assigned staff member, verifier, customer, and elapsed time in the completed-orders channel.
+- The ticket owner, general staff, or routed payment team can close a ticket. A visible 5-second countdown runs, then the bot saves a transcript in the configured archive channel, removes the customer's access, and clears the ticket's active form data from local state. The private Discord channel remains available to staff; it is not deleted.
 - The customer can submit one vouch from their completed-order post. Vouches are posted in the configured vouches channel.
 
 The bot does not collect card numbers, account passwords, payment credentials, or process a charge. Contact and delivery details are visible to the customer and configured ticket roles. Open ticket form data is stored locally in `data/state.json` so the bot can survive restarts; closing the ticket removes that active record. Completed-order summaries and vouch records remain in the state file so vouches can be verified and duplicate submissions prevented. Keep that file private and use a host with persistent storage.

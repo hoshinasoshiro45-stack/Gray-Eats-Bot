@@ -71,6 +71,15 @@ export class JsonStore {
       const loaded = JSON.parse(contents) as Partial<BotState>;
       this.state = { ...emptyState(), ...loaded };
       this.state.managementAccessUsers ??= {};
+      for (const config of Object.values(this.state.servers)) {
+        const savedRestaurants = config.restaurants ?? {};
+        config.restaurants = Object.fromEntries(
+          RESTAURANTS.map((restaurant) => [
+            restaurant.id,
+            savedRestaurants[restaurant.id] ?? restaurant.availableByDefault,
+          ]),
+        ) as ServerConfig["restaurants"];
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         this.state = emptyState();
