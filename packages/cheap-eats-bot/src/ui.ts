@@ -27,6 +27,17 @@ import {
 const cyan = 0x25c6d5;
 const green = 0x2ecc71;
 
+const DISCOUNT_PERCENT = 50;
+const FLAT_FEE = 0; // change to 1.5 if you add a flat fee on top
+
+export function calculateFee(cartTotal?: string): string | undefined {
+  if (!cartTotal) return undefined;
+  const amount = Number.parseFloat(cartTotal.replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(amount) || amount <= 0) return undefined;
+  const result = amount * (1 - DISCOUNT_PERCENT / 100) + FLAT_FEE;
+  return (Math.round(result * 100) / 100).toFixed(2);
+}
+
 export function orderPanel() {
   return {
     embeds: [
@@ -310,13 +321,14 @@ export function supportModal() {
     );
 }
 
-export function completionModal(channelId: string) {
+export function completionModal(channelId: string, cartTotal?: string) {
+  const row = modalField("final_charge", "Final charge (example: 14.69)", TextInputStyle.Short, true, "$0.00");
+  const suggested = calculateFee(cartTotal);
+  if (suggested) row.components[0]?.setValue(suggested);
   return new ModalBuilder()
     .setCustomId(`ticket:complete:${channelId}`)
     .setTitle("Verify completed order")
-    .addComponents(
-      modalField("final_charge", "Final charge (example: 14.69)", TextInputStyle.Short, true, "$0.00"),
-    );
+    .addComponents(row);
 }
 
 export function ticketEmbed(ticket: TicketRecord) {
@@ -338,6 +350,7 @@ export function ticketEmbed(ticket: TicketRecord) {
     );
 
   if (ticket.kind === "order") {
+    const fee = calculateFee(ticket.cartTotal);
     embed
       .addFields(
         { name: "🍽️ Restaurant", value: getRestaurantDisplayName(ticket.restaurantId ?? "") ?? "—", inline: true },
@@ -349,6 +362,7 @@ export function ticketEmbed(ticket: TicketRecord) {
         },
         { name: "🧾 Items and quantities", value: ticket.items || "—" },
         { name: "🛒 Cart total", value: ticket.cartTotal || "—", inline: true },
+        { name: "💸 Fee (50% off)", value: fee ? `$${fee}` : "—", inline: true },
         { name: "📍 Pickup or delivery", value: ticket.pickupOrDelivery || "—" },
         { name: "☎️ Contact", value: ticket.contact || "Not provided", inline: true },
         { name: "📝 Notes", value: ticket.notes || "Not provided", inline: true },
@@ -490,4 +504,3 @@ export function vouchModal(orderId: string, completionChannelId: string, message
       ),
     );
 }
-
